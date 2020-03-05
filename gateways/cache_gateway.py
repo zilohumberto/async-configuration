@@ -21,22 +21,24 @@ class CacheGateway:
             port=self.redis_port,
             password="",
         )
-        self.pubsub = self.queue.pubsub()
 
     @staticmethod
-    async def get_poll():
-        return await aioredis.create_redis_pool(f'redis://{REDIS_HOST}:{REDIS_PORT}')
+    async def get_pool():
+        self.pool = await aioredis.create_redis_pool(f'redis://{REDIS_HOST}:{REDIS_PORT}')
 
     def subscribe(self, **kwargs):
-        self.pubsub.subscribe(**kwargs)
+        self.pool.subscribe(**kwargs)
 
     def publish_message(self, key, message):
         log.debug(f"publishing in {key}: {message}")
         return self.queue.publish(key, message)
 
-    def close(self):
+    async def close(self):
         self.queue.connection_pool.disconnect()
         self.queue.close()
+        if self.pool:
+            self.pool.close()
+            await self.pool.wait_close()
 
     def get(self, key, is_json=False, is_pickle=False):
         value = self.queue.get(key)

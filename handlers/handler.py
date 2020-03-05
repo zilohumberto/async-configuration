@@ -4,6 +4,7 @@ from asyncio import sleep, get_running_loop
 from datetime import datetime
 from settings import DATETIME_FORMAT, TIME_SLEEP_PRODUCER, TIME_SLEEP_CONSUMER
 from services.action_service import ActionService
+from gateways.cache_gateway import CacheGateway
 
 
 class Handler(ABC):
@@ -12,14 +13,12 @@ class Handler(ABC):
     cache = None
     send = None
     channels = None
-    subscriptions = []
     logged = None
     task_end = False
 
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
             setattr(self, key, value)
-        # self.subscribe_cache_gateway()
 
     async def subscribe_cache_gateway(self):
         self.channels = [self.uid]
@@ -27,7 +26,8 @@ class Handler(ABC):
             ws_client_uid = self.uid.split(";")[0]
             self.channels.append(ws_client_uid)
 
-        cache_poll = await self.cache.get_poll()
+        self.cache = CacheGateway()
+        await self.cache.get_pool()
 
         for channel in self.channels:
             subscription, = await cache_poll.subscribe(channel)
@@ -41,7 +41,6 @@ class Handler(ABC):
         """
         while True:
             try:
-                print(f"{self.uid} Socket subscribed to the following channels: {self.channels}")
                 message = await receive()
             except Exception as e:
                 print(f'{self.uid} consumer unknown error: {e}')
@@ -72,8 +71,7 @@ class Handler(ABC):
             try:
                 message = message.decode('utf-8')
             except Exception as e:
-                print(e)
-                raise Exception()
+                break
 
             formatted_message = ActionService.load_message(message)
             print(
@@ -85,6 +83,7 @@ class Handler(ABC):
             else:
                 message_to_send = ActionService.action_response(**formatted_message)
                 await self.send(message_to_send)
+        self.task_end = True
 
     async def on_message(self, action, params=dict(), **kwargs):
         try:
@@ -129,21 +128,9 @@ class Handler(ABC):
 
     @staticmethod
     def get_disassociate_response():
-        """
-            Este caso se va a provocar cuando la camera conectado pierda conexion
-            pasos:
-                LOGIN_START - ok
-                Transmision establecida de datos - ok
-                Por algun motivo se pierde conexion - FAIL
-                todos los attr de self pierden valor - None
-                La camara constantemente sigue mandando el live-status / wifi networks - Fail
-                La conexion se pierde
-                Se le notifica a la camera con un nuevo comando "disassociated"
-                La logica pasa a camera (verificar el token y volver al paso LOGIN_START)
-        """
         return ActionService.action_response(
-            action="disassociated_camera",
-            params="DISASSOCIATED_CAMERA",
+            action="disassociated",
+            params="DISASSOCIATED",
             detail=str(f"connection lost, please check token with server.")
         )
 
@@ -152,12 +139,7 @@ class Handler(ABC):
         return {"from": self.uid, "creation_date": datetime.now().strftime(DATETIME_FORMAT)}
 
     async def unsubscribe(self, params):
-        for subscription in self.subscriptions:
-            subscription.punsubscribe()
-            subscription.unsubscribe()
-            subscription.close()
         self.channels = []
-        self.subscriptions = []
         self.task_end = True
-        if self.cache:
-            self.cache.close()
+        await self.cache.close()
+
